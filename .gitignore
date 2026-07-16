@@ -1,0 +1,6 @@
+node_modules/
+fb-profile/
+logs/
+.claude/
+debug.txt
+*.log

@@ -1,0 +1,12 @@
+{
+  "name": "geva-extract",
+  "version": "1.0.0",
+  "description": "Daily extraction of Geva support/resistance lines from Facebook",
+  "scripts": {
+    "save-auth": "node save-auth.js",
+    "extract": "node extract.js"
+  },
+  "dependencies": {
+    "playwright": "^1.45.0"
+  }
+}

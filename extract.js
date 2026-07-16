@@ -7,9 +7,9 @@
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
+const { openDb } = require('./db');
 
 const PROFILE_DIR = path.join(__dirname, 'fb-profile');
-const OUTPUT_DIR = path.join(__dirname, 'output');
 const LOGS_DIR = path.join(__dirname, 'logs');
 const GROUP_URL = 'https://www.facebook.com/groups/222428877934828/?sorting_setting=RECENT_ACTIVITY';
 const MAX_SCROLLS = 40;
@@ -238,46 +238,6 @@ function extractLines(text) {
   return { support, resistance };
 }
 
-// ── File output ───────────────────────────────────────────────────────────────
-
-function buildTxt(data) {
-  return [
-    `DATE: ${data.date}`,
-    `DAY: ${data.day}`,
-    `SOURCE: ${data.groupUrl}`,
-    `POST URL: ${data.postUrl ?? 'unknown'}`,
-    '',
-    'SUPPORT:',
-    data.support ?? '(not found)',
-    '',
-    'RESISTANCE:',
-    data.resistance ?? '(not found)',
-    '',
-    'FULL POST:',
-    data.fullText,
-  ].join('\n');
-}
-
-function saveFiles(data) {
-  if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-
-  const base = `Geva_${data.date}`;
-  const txtPath = path.join(OUTPUT_DIR, `${base}.txt`);
-  const jsonPath = path.join(OUTPUT_DIR, `${base}.json`);
-
-  if (fs.existsSync(txtPath)) {
-    log(`WARNING: ${base}.txt already exists — saving as duplicate.`);
-    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    fs.writeFileSync(path.join(OUTPUT_DIR, `${base}_dup_${ts}.txt`), buildTxt(data));
-    fs.writeFileSync(path.join(OUTPUT_DIR, `${base}_dup_${ts}.json`), JSON.stringify(data, null, 2));
-    return;
-  }
-
-  fs.writeFileSync(txtPath, buildTxt(data));
-  fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2));
-  log(`Saved: ${txtPath}`);
-  log(`Saved: ${jsonPath}`);
-}
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -289,6 +249,8 @@ async function main() {
     log('ERROR: Facebook session not found. Run "node save-auth.js" first.');
     process.exit(1);
   }
+
+  const db = await openDb();
 
   const browser = await chromium.launchPersistentContext(PROFILE_DIR, {
     headless: false,
@@ -347,13 +309,16 @@ async function main() {
       capturedAt: new Date().toISOString(),
     };
 
-    saveFiles(data);
+    db.upsertPost({ ...data, source: 'daily' });
+    db.save();
+    log(`Saved to DB: ${data.date}`);
     log('=== Extraction complete ===');
 
   } catch (err) {
     log(`FATAL: ${err.message}`);
     process.exit(1);
   } finally {
+    db.close();
     await browser.close();
   }
 }

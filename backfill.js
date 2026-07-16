@@ -1,34 +1,30 @@
-// Historical backfill — uses Facebook's in-group search (far more reliable than
-// scrolling the activity feed, which buries old posts under unrelated chatter)
-// to find Geva's daily support/resistance posts and save the N most recent ones.
+// Historical backfill — uses Facebook's in-group search to find Geva's daily
+// support/resistance posts and save them all to the DB.
 //
-// Usage: node backfill.js [daysBack]   (default 5)
+// Usage: node backfill.js
 //
-// Date resolution: Facebook no longer exposes usable post-timestamp metadata
-// (no data-utime/title, and aria-labels are absent; the visible "time ago" text
-// is deliberately scrambled and survives even computed-style filtering). The
-// reliable signal is the Hebrew weekday name Geva writes into the post itself
-// ("...יום שלישי,..."). Within a single weekday, search results are encountered
-// in decreasing-recency order (verified against price-level continuity across
-// consecutive posts), so the Nth time a given weekday is encountered maps to
-// N*7 days before the most recent occurrence of that weekday.
+// Scrolls until FB search is exhausted (NO_NEW_LIMIT consecutive empty scrolls).
+// Date resolution: the Hebrew weekday name Geva writes into the post is the
+// only reliable signal (FB hides timestamp metadata). Posts are encountered
+// newest-first within each weekday, so the Nth occurrence of a weekday maps
+// to N*7 days before the most recent occurrence of that weekday.
 
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
+const { openDb } = require('./db');
 
 const PROFILE_DIR  = path.join(__dirname, 'fb-profile');
-const OUTPUT_DIR   = path.join(__dirname, 'output');
 const LOGS_DIR     = path.join(__dirname, 'logs');
 const GROUP_ID     = '222428877934828';
 const SEARCH_TERM  = 'קווי תמיכה';
 const SEARCH_URL   = `https://www.facebook.com/groups/${GROUP_ID}/search/?q=${encodeURIComponent(SEARCH_TERM)}`;
 const POST_SEL     = 'div[role="feed"] > div, div[role="article"]';
-const MAX_TEXT_LEN = 5000; // longer nodes are aggregate/wrapper garbage, not a single post
-const MAX_SCROLLS  = 30;
-const NO_NEW_LIMIT = 4;
+const MAX_TEXT_LEN = 5000;
+const MAX_SCROLLS  = 200;
+const NO_NEW_LIMIT = 6;
 
-const WEEKDAY_MAP = { 'ראשון': 0, 'שני': 1, 'שלישי': 2, 'רביעי': 3, 'חמישי': 4, 'שישי': 5, 'שבת': 6 };
+const WEEKDAY_MAP   = { 'ראשון': 0, 'שני': 1, 'שלישי': 2, 'רביעי': 3, 'חמישי': 4, 'שישי': 5, 'שבת': 6 };
 const WEEKDAY_NAMES = ['יום ראשון', 'יום שני', 'יום שלישי', 'יום רביעי', 'יום חמישי', 'יום שישי', 'יום שבת'];
 
 function toDateStr(d) { return d.toISOString().split('T')[0]; }
@@ -44,11 +40,6 @@ function log(msg) {
 }
 
 function extractLines(text) {
-  // Search-result posts embed a truncated preview copy followed by the full
-  // expanded copy ("...See more<slug>.comOren**בוקר טוב...**"). Isolate the
-  // expanded copy (from the LAST "בוקר טוב") before parsing, so each label
-  // ("קווי תמיכה"/"קווי התנגדות") only appears once and the terminator
-  // lookaheads (next label / "סימן" / url / end) land correctly.
   const lastIdx = text.lastIndexOf('בוקר טוב');
   const clean = lastIdx >= 0 ? text.slice(lastIdx) : text;
   const support    = clean.match(/קווי תמיכה[\s\S]+?(?=קווי התנגדות)/)?.[0]?.replace(/\s+/g, ' ').trim() ?? null;
@@ -56,38 +47,6 @@ function extractLines(text) {
   return { support, resistance };
 }
 
-function buildTxt(data) {
-  return [
-    `DATE: ${data.date}`,
-    `DAY: ${data.day}`,
-    `SOURCE: ${data.groupUrl}`,
-    `POST URL: ${data.postUrl ?? 'unknown'}`,
-    '',
-    'SUPPORT:',
-    data.support ?? '(not found)',
-    '',
-    'RESISTANCE:',
-    data.resistance ?? '(not found)',
-    '',
-    'FULL POST:',
-    data.fullText,
-  ].join('\n');
-}
-
-function alreadySaved(date) {
-  return fs.existsSync(path.join(OUTPUT_DIR, `Geva_${date}.txt`));
-}
-
-function savePost(data) {
-  if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-  const base = `Geva_${data.date}`;
-  fs.writeFileSync(path.join(OUTPUT_DIR, `${base}.txt`),  buildTxt(data), 'utf8');
-  fs.writeFileSync(path.join(OUTPUT_DIR, `${base}.json`), JSON.stringify(data, null, 2), 'utf8');
-  log(`  Saved: ${base}.txt`);
-}
-
-// Resolves a Hebrew weekday name + "how many times we've already seen this
-// weekday" into an actual calendar date, anchored at `today`.
 function resolveDate(weekdayHebrew, occurrenceIndex, today) {
   const targetDow = WEEKDAY_MAP[weekdayHebrew];
   if (targetDow === undefined) return null;
@@ -138,13 +97,14 @@ async function scanMatches(page) {
 }
 
 async function main() {
-  const daysBack = parseInt(process.argv[2], 10) || 5;
-  log(`=== Backfill started (target: ${daysBack} most recent posts) ===`);
+  log('=== Backfill started — scrolling until FB search exhausted ===');
 
   if (!fs.existsSync(PROFILE_DIR)) {
     log('ERROR: No saved Facebook session. Run "node save-auth.js" first.');
     process.exit(1);
   }
+
+  const db = await openDb();
 
   const browser = await chromium.launchPersistentContext(PROFILE_DIR, {
     headless: false,
@@ -154,7 +114,7 @@ async function main() {
   const page = browser.pages()[0] || await browser.newPage();
 
   try {
-    log(`Navigating to group search: ${SEARCH_URL}`);
+    log(`Navigating to: ${SEARCH_URL}`);
     await page.goto(SEARCH_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForTimeout(4000);
 
@@ -164,7 +124,7 @@ async function main() {
     }
 
     const seenBodies = new Set();
-    const collected = []; // { fullText, postUrl }
+    const collected  = [];
     let noNewContent = 0;
 
     for (let scroll = 0; scroll <= MAX_SCROLLS; scroll++) {
@@ -188,68 +148,59 @@ async function main() {
 
       if (after === before) {
         noNewContent++;
-        log(`Scroll ${scroll + 1} — no new content (${noNewContent}/${NO_NEW_LIMIT})`);
+        log(`Scroll ${scroll + 1} — no new content (${noNewContent}/${NO_NEW_LIMIT}), total collected: ${collected.length}`);
         if (noNewContent >= NO_NEW_LIMIT) { log('Search results exhausted.'); break; }
       } else {
         noNewContent = 0;
-        log(`Scroll ${scroll + 1} — ${collected.length} unique posts collected so far (+${newCount})`);
-      }
-
-      // Once we likely have enough distinct posts to cover daysBack (with buffer
-      // for weekday collisions), stop scrolling — search is expensive and the
-      // group has months of history we don't need for a shallow backfill.
-      if (collected.length >= daysBack + 4) {
-        log('Collected enough candidates for requested depth, stopping scroll.');
-        break;
+        log(`Scroll ${scroll + 1} — ${collected.length} unique posts (+${newCount})`);
       }
     }
 
-    log(`Total unique candidate posts collected: ${collected.length}`);
+    log(`Total unique candidate posts: ${collected.length}`);
 
-    // Resolve dates: count occurrences per weekday in encounter order.
+    // Resolve dates: count occurrences per weekday in encounter order (newest first).
     const today = new Date();
     const occurrenceCount = {};
     const resolved = [];
     for (const m of collected) {
       const dayMatch = m.fullText.match(/יום (ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
-      if (!dayMatch) {
-        log('  Skipping — no weekday name found in post text.');
-        continue;
-      }
+      if (!dayMatch) { log('  Skipping — no weekday name in post.'); continue; }
       const wd = dayMatch[1];
       const occIdx = occurrenceCount[wd] ?? 0;
       occurrenceCount[wd] = occIdx + 1;
       const date = resolveDate(wd, occIdx, today);
-      resolved.push({ date, ...m });
+      if (date) resolved.push({ date, ...m });
     }
 
-    resolved.sort((a, b) => (a.date < b.date ? 1 : -1)); // newest first
-    const target = resolved.slice(0, daysBack);
+    resolved.sort((a, b) => (a.date < b.date ? 1 : -1));
 
-    let savedCount = 0, skippedAlready = 0;
-    for (const r of target) {
-      if (alreadySaved(r.date)) {
-        log(`  Already saved: ${r.date} — skipping`);
-        skippedAlready++;
+    let savedCount = 0, skippedCount = 0;
+    for (const r of resolved) {
+      if (db.postExists(r.date)) {
+        log(`  Already in DB: ${r.date} — skipping`);
+        skippedCount++;
         continue;
       }
       const { support, resistance } = extractLines(r.fullText);
-      savePost({
-        date: r.date,
-        day: getHebrewDay(r.date),
+      db.upsertPost({
+        date:       r.date,
+        day:        getHebrewDay(r.date),
         support,
         resistance,
-        fullText: r.fullText,
-        postUrl: r.postUrl,
-        groupUrl: `https://www.facebook.com/groups/${GROUP_ID}/`,
+        fullText:   r.fullText,
+        postUrl:    r.postUrl,
         capturedAt: new Date().toISOString(),
+        source:     'backfill',
       });
+      log(`  Saved: ${r.date}`);
       savedCount++;
     }
 
-    log(`=== Backfill complete: ${savedCount} saved, ${skippedAlready} already existed, ${resolved.length - target.length} beyond requested depth ===`);
+    db.save();
+    log(`=== Backfill complete: ${savedCount} saved, ${skippedCount} already in DB ===`);
 
   } finally {
+    db.close();
     await browser.close();
   }
 }

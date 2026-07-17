@@ -165,6 +165,16 @@ function buildHtml(posts, lines) {
     .muted{color:#555;font-size:.78rem}
     .hdr-right{margin-right:auto;display:flex;gap:8px;align-items:center}
     a.rl{color:#4a90d9;text-decoration:none;font-size:.79rem}
+    .menu-wrap{position:relative}
+    .menu-btn{background:#1a2030;border:1px solid #2a3a5a;color:#7ab3f5;border-radius:5px;
+      padding:4px 10px;font-size:.79rem;cursor:pointer;line-height:1.4}
+    .menu-btn:hover{background:#1e2a40}
+    .menu-dd{display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#161923;
+      border:1px solid #2a2d3a;border-radius:6px;min-width:11rem;z-index:50;
+      box-shadow:0 4px 20px rgba(0,0,0,.5);padding:4px 0}
+    .menu-dd.open{display:block}
+    .menu-dd a.mi{display:block;padding:6px 12px;color:#e0e0e0;text-decoration:none;font-size:.75rem}
+    .menu-dd a.mi:hover{background:#1e2030}
     #fetchBtn{background:#1a2030;border:1px solid #2a3a5a;color:#7ab3f5;border-radius:5px;padding:4px 11px;font-size:.77rem;cursor:pointer}
     #fetchBtn:hover:not(:disabled){background:#1e2a40}
     #fetchBtn:disabled{opacity:.4;cursor:default}
@@ -248,6 +258,14 @@ function buildHtml(posts, lines) {
       <a class="rl" href="/">↺</a>
       <button id="fetchBtn" onclick="manualFetch()">⬇ שלוף</button>
       <span id="fetchStatus"></span>
+      <div class="menu-wrap">
+        <button class="menu-btn" onclick="document.getElementById('menu-dd').classList.toggle('open')" title="Other dashboards">🔗</button>
+        <div class="menu-dd" id="menu-dd">
+          <a class="mi" id="menu-link-cc2026" target="_blank">CC2026 Dashboard</a>
+          <a class="mi" id="menu-link-fetcher" target="_blank">Fetcher2026</a>
+          <a class="mi" id="menu-link-geva" target="_blank">GevaExtract (this)</a>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -277,6 +295,17 @@ function buildHtml(posts, lines) {
   (function(){
     const t=sessionStorage.getItem('tab');
     if(t){const e=document.querySelector('[onclick*="\''+t+'\'"]');if(e)e.click();}
+  })();
+
+  // Cross-dashboard menu — same host, different port, works on localhost/LAN/Tailscale
+  (function(){
+    const base=location.protocol+'//'+location.hostname;
+    document.getElementById('menu-link-cc2026').href  = base+':5003';
+    document.getElementById('menu-link-fetcher').href = base+':5050';
+    document.getElementById('menu-link-geva').href    = base+':5005';
+    document.addEventListener('click',(e)=>{
+      if(!e.target.closest('.menu-wrap')) document.getElementById('menu-dd').classList.remove('open');
+    });
   })();
 
   // ── Prices ───────────────────────────────────────────────────────────────────

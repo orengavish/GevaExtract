@@ -67,6 +67,16 @@ async function readGalaoDb() {
       return q('SELECT value FROM system_state WHERE key=?', [key])[0]?.value ?? null;
     },
 
+    // All Geva commands for Sub tab (source='geva_extract', newest first)
+    getGevaAllCommands(limit = 200) {
+      return q(
+        'SELECT id, symbol, direction, entry_type, entry_price, tp_price, sl_price, ' +
+        'bracket_size, line_type, line_strength, status, fill_price, updated_at, ' +
+        'parent_command_id, pnl_points FROM commands WHERE source=\'geva_extract\' ' +
+        'ORDER BY id DESC LIMIT ' + limit
+      );
+    },
+
     close() { db.close(); },
 
     MULTIPLIER,

@@ -77,6 +77,15 @@ async function readGalaoDb() {
       );
     },
 
+    // For dedup: (symbol, entry_price, tp_price, sl_price, direction) of all non-terminal geva orders
+    getActiveGevaOrders() {
+      return q(
+        "SELECT symbol, entry_price, tp_price, sl_price, direction FROM commands " +
+        "WHERE source='geva_extract' " +
+        "AND status NOT IN ('CLOSED','CANCELLED','ERROR','RECONCILE_REQUIRED')"
+      );
+    },
+
     close() { db.close(); },
 
     MULTIPLIER,

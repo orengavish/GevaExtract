@@ -152,6 +152,8 @@ function buildAutoTab() {
   <div style="max-width:640px;margin:0 auto">
     <div style="text-align:center;padding:28px 0 20px">
       <button id="auto-go-btn" class="auto-go" onclick="runAuto()">&#9654; GO</button>
+      <button id="auto-cancel-btn" class="auto-go" onclick="cancelAll()"
+        style="margin-left:14px;background:#4a1010;border-color:#7a1a1a;color:#fc8181">&#9746; Cancel All</button>
       <div id="auto-subtitle" style="margin-top:14px;font-size:.85rem;color:#718096">Fetch lines &rarr; build all orders &rarr; submit to broker</div>
     </div>
     <div id="auto-steps">
@@ -293,6 +295,27 @@ function buildHtml(posts, lines) {
   </style>
 </head>
 <body>
+  <script>
+  /* Early-load stubs: queue calls that arrive before the main script executes.
+     The main script's function declarations overwrite window.X, so after it
+     runs the stubs are gone and everything works normally. */
+  (function(){
+    var _q=[], _ready=false;
+    document.addEventListener('DOMContentLoaded',function(){
+      _ready=true; _q.forEach(function(f){f();}); _q=[];
+    });
+    function defer(fn){ _ready?fn():_q.push(fn); }
+    ['show','manualFetch','createTrades','submitTrades','loadSubmitted',
+     'loadPnl','runAuto','refreshPrices','toggleSelAll','updateSubmitCount',
+     'toggleSubAuto'].forEach(function(name){
+      window[name]=function(){
+        var args=Array.prototype.slice.call(arguments);
+        defer(function(){ window[name].apply(null,args); });
+      };
+    });
+    window.toggleReplenish=function(e){ defer(function(){ toggleReplenish(e); }); };
+  })();
+  </script>
   <header>
     <h1>Geva S&amp;R</h1>
     <span class="ver">v${VERSION}</span>
@@ -352,7 +375,7 @@ function buildHtml(posts, lines) {
   }
   (function(){
     const t=sessionStorage.getItem('tab');
-    if(t){const e=document.querySelector('[onclick*="\''+t+'\'"]');if(e)e.click();}
+    if(t){const e=Array.from(document.querySelectorAll('.tab')).find(el=>(el.getAttribute('onclick')||'').includes("'"+t+"'"));if(e)e.click();}
   })();
 
   // Cross-dashboard menu — same host, different port, works on localhost/LAN/Tailscale
@@ -394,7 +417,7 @@ function buildHtml(posts, lines) {
     } else if(state==='ok'){
       mo.innerHTML='<div class="fm-icon">&#x2705;</div><div class="fm-title" style="color:#68d391">Fetch succeeded!</div><div class="fm-msg">'+msg+'</div>';
     } else {
-      mo.innerHTML='<div class="fm-icon">&#x274C;</div><div class="fm-title" style="color:#fc8181">Fetch failed</div><div class="fm-msg" style="margin-bottom:16px">'+msg+'</div><button class="abtn" onclick="document.getElementById(\'fetchOverlay\').classList.remove(\'show\')">Close</button>';
+      mo.innerHTML='<div class="fm-icon">&#x274C;</div><div class="fm-title" style="color:#fc8181">Fetch failed</div><div class="fm-msg" style="margin-bottom:16px">'+msg+'</div><button class="abtn" onclick="document.getElementById(\\'fetchOverlay\\').classList.remove(\\'show\\')">Close</button>';
     }
   }
   async function manualFetch(){
@@ -683,9 +706,9 @@ function buildHtml(posts, lines) {
     const nt=document.getElementById('as-nt-'+n);
     if(!ic) return;
     if(state==='run'){ic.innerHTML='<span class="as-spin"></span>';ic.style.color='';}
-    else if(state==='ok'){ic.textContent='&#10003;';ic.style.color='#68d391';}
-    else if(state==='err'){ic.textContent='&#10007;';ic.style.color='#fc8181';}
-    else{ic.textContent='&#9675;';ic.style.color='';}
+    else if(state==='ok'){ic.innerHTML='&#10003;';ic.style.color='#68d391';}
+    else if(state==='err'){ic.innerHTML='&#10007;';ic.style.color='#fc8181';}
+    else{ic.innerHTML='&#9675;';ic.style.color='';}
     if(nt&&note!==undefined) nt.textContent=note;
   }
 
@@ -759,6 +782,27 @@ function buildHtml(posts, lines) {
       document.getElementById('auto-live').innerHTML=html;
       refreshGlobalStatus();
     }catch(e){}
+  }
+
+  async function cancelAll(){
+    const btn=document.getElementById('auto-cancel-btn');
+    const sub=document.getElementById('auto-subtitle');
+    if(!confirm('Cancel ALL geva_extract orders (PENDING + SUBMITTED)?\\nAlso sends reqGlobalCancel to IB if CC2026 visualizer is up.')) return;
+    btn.disabled=true;btn.textContent='Cancelling...';
+    try{
+      const d=await(await fetch('/api/cancel-all',{method:'POST'})).json();
+      if(d.ok){
+        const note='Cancelled '+d.cancelled+' rows in DB. IB: '+d.ib;
+        if(sub) sub.textContent=note;
+        refreshGlobalStatus();
+      } else {
+        alert('Cancel failed: '+(d.error||'unknown'));
+      }
+    }catch(e){
+      alert('Cancel error: '+e.message);
+    }finally{
+      btn.disabled=false;btn.innerHTML='&#9746; Cancel All';
+    }
   }
 
   async function toggleReplenish(enabled){
@@ -849,6 +893,10 @@ function getCc2026Status() {
 
 // ── API handlers ──────────────────────────────────────────────────────────────
 
+// Minimum tick distance from current market to entry — prevents immediate fills.
+// 4 ticks = 1.0 point for MES/MNQ (tick = 0.25).
+const MIN_ENTRY_TICKS = 4;
+
 async function handleTradesCreate(body) {
   const symbols     = body.symbols     ?? ['MES', 'MNQ'];
   const brackets    = body.brackets    ?? BRACKETS.map(b => b.label);
@@ -863,7 +911,21 @@ async function handleTradesCreate(body) {
   const latestDate = lines[0].date;
   const todayLines = lines.filter(l => l.date === latestDate);
 
-  const prices = priceFeed.getPrices();
+  // Prefer IB live prices from galao.db (real-time, fed by broker) over Yahoo (15-min delayed).
+  // Accurate prices are critical for the sanity filter — stale prices can miss near-market orders.
+  const yahooPrices = priceFeed.getPrices();
+  const prices = { MES: yahooPrices.MES, MNQ: yahooPrices.MNQ };
+  try {
+    const galaoP = await readGalaoDb();
+    if (galaoP) {
+      const ibMes = galaoP.getPrice('MES');
+      const ibMnq = galaoP.getPrice('MNQ');
+      if (ibMes) prices.MES = { price: ibMes.last_price, source: 'ib' };
+      if (ibMnq) prices.MNQ = { price: ibMnq.last_price, source: 'ib' };
+      galaoP.close();
+    }
+  } catch (_) {}
+
   if (!prices.MES?.price || !prices.MNQ?.price) {
     return { ok: false, msg: 'MES/MNQ price not available — wait 30s and retry' };
   }
@@ -880,22 +942,80 @@ async function handleTradesCreate(body) {
     }));
   }
 
-  const passed   = allCandidates.filter(c =>
-    symbols.includes(c.symbol) &&
-    brackets.includes(c._bracket) &&
-    c.line_strength >= minStrength
-  );
-  const filtered = allCandidates.length - passed.length;
+  // Load active geva orders for dedup — skip any (symbol, entry, tp, sl, direction) already in-flight.
+  const activeKeys = new Set();
+  try {
+    const galaoD = await readGalaoDb();
+    if (galaoD) {
+      for (const o of galaoD.getActiveGevaOrders()) {
+        activeKeys.add(`${o.symbol}|${o.entry_price}|${o.tp_price}|${o.sl_price}|${o.direction}`);
+      }
+      galaoD.close();
+    }
+  } catch (_) {}
 
-  return { ok: true, candidates: passed, total: allCandidates.length, passed: passed.length, filtered };
+  const priceFor = sym => sym === 'MES' ? prices.MES.price : prices.MNQ.price;
+  const minDist  = MIN_ENTRY_TICKS * 0.25;
+
+  let sanityFiltered = 0;
+  let deduped        = 0;
+
+  const passed = allCandidates.filter(c => {
+    if (!symbols.includes(c.symbol))       return false;
+    if (!brackets.includes(c._bracket))    return false;
+    if (c.line_strength < minStrength)     return false;
+    // Sanity: entry must be ≥ MIN_ENTRY_TICKS from current market.
+    if (Math.abs(c.entry_price - priceFor(c.symbol)) < minDist) { sanityFiltered++; return false; }
+    // Dedup: skip if an identical active order already exists in galao.db.
+    const key = `${c.symbol}|${c.entry_price}|${c.tp_price}|${c.sl_price}|${c.direction}`;
+    if (activeKeys.has(key)) { deduped++; return false; }
+    return true;
+  });
+
+  const filtered = allCandidates.length - passed.length;
+  return {
+    ok: true,
+    candidates:  passed,
+    total:       allCandidates.length,
+    passed:      passed.length,
+    filtered,
+    sanityFiltered,
+    deduped,
+    priceSource: { MES: prices.MES.source ?? 'yahoo', MNQ: prices.MNQ.source ?? 'yahoo' },
+  };
 }
 
 async function handleSubmitCommands(body) {
   const { commands } = body;
   if (!Array.isArray(commands) || !commands.length) return { ok: false, msg: 'missing commands' };
 
+  // Secondary sanity check (belt+suspenders): market may have moved since build was called.
+  // Re-read prices and drop any order now within MIN_ENTRY_TICKS of market.
+  const yahooPrices = priceFeed.getPrices();
+  const prices = { MES: yahooPrices.MES, MNQ: yahooPrices.MNQ };
+  try {
+    const galaoP = await readGalaoDb();
+    if (galaoP) {
+      const ibMes = galaoP.getPrice('MES');
+      const ibMnq = galaoP.getPrice('MNQ');
+      if (ibMes) prices.MES = { price: ibMes.last_price };
+      if (ibMnq) prices.MNQ = { price: ibMnq.last_price };
+      galaoP.close();
+    }
+  } catch (_) {}
+
+  const minDist   = MIN_ENTRY_TICKS * 0.25;
+  const priceFor2 = sym => sym === 'MES' ? prices.MES?.price : prices.MNQ?.price;
+
+  const safeCommands = commands.filter(c => {
+    const p = priceFor2(c.symbol);
+    if (!p) return true; // no price → can't validate, allow through
+    return Math.abs(c.entry_price - p) >= minDist;
+  });
+  const sanityDropped = commands.length - safeCommands.length;
+
   // Strip _* client-only metadata fields before inserting
-  const clean = commands.map(c => ({
+  const clean = safeCommands.map(c => ({
     symbol:        c.symbol,
     line_price:    c.line_price,
     line_type:     c.line_type,
@@ -908,10 +1028,14 @@ async function handleSubmitCommands(body) {
     bracket_size:  c.bracket_size,
   }));
 
+  if (!clean.length) {
+    return { ok: true, inserted: 0, sanityDropped, msg: 'all candidates dropped by secondary sanity check' };
+  }
+
   try {
     const result = await runPython([], clean);
     return result.ok
-      ? { ok: true, inserted: result.inserted }
+      ? { ok: true, inserted: result.inserted, sanityDropped }
       : { ok: false, msg: result.error ?? 'error' };
   } catch (e) {
     return { ok: false, msg: e.message };
@@ -963,6 +1087,41 @@ async function handleReplenish(body) {
   }
 }
 
+async function handleCancelAll() {
+  // Step 1: try to hit CC2026 visualizer cancel-all (does IB reqGlobalCancel + full DB update)
+  let ibResult = 'skipped';
+  try {
+    const resp = await new Promise((resolve, reject) => {
+      const req = http.request(
+        { hostname: 'localhost', port: 5001, path: '/api/cancel-all', method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': 2 } },
+        res => {
+          let raw = '';
+          res.on('data', d => raw += d);
+          res.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve({}); } });
+        }
+      );
+      req.on('error', reject);
+      req.setTimeout(5000, () => { req.destroy(); reject(new Error('timeout')); });
+      req.write('{}');
+      req.end();
+    });
+    ibResult = resp.ib_cancel ?? 'ok';
+  } catch (e) {
+    ibResult = 'unavailable';
+  }
+
+  // Step 2: always do geva_extract-scoped DB cancel via Python bridge (idempotent)
+  let dbResult;
+  try {
+    dbResult = await runPython(['--cancel']);
+  } catch (e) {
+    dbResult = { ok: false, error: e.message };
+  }
+
+  return { ok: dbResult.ok, cancelled: dbResult.cancelled ?? 0, ib: ibResult };
+}
+
 // ── Request body ──────────────────────────────────────────────────────────────
 
 function readBody(req) {
@@ -994,6 +1153,25 @@ async function startServer() {
       return;
     }
 
+    if (req.method === 'GET' && url === '/api/today-lines') {
+      try {
+        const db    = await openDb();
+        const lines = db.getAllLines();
+        db.close();
+        const date     = lines.length ? lines[0].date : null;
+        const today    = new Date().toISOString().slice(0, 10);
+        // "today" is the most recent date in the DB — may be yesterday pre-fetch
+        const hasLines = lines.length > 0;
+        const count    = date ? lines.filter(l => l.date === date).length : 0;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ hasLines, date, count, dbToday: today }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ hasLines: false, error: err.message }));
+      }
+      return;
+    }
+
     if (req.method === 'POST' && url === '/api/trades/create') {
       const body = await readBody(req);
       const result = await handleTradesCreate(body);
@@ -1019,6 +1197,12 @@ async function startServer() {
     if (req.method === 'GET' && url === '/api/pnl') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(await handlePnl()));
+      return;
+    }
+
+    if (req.method === 'POST' && url === '/api/cancel-all') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(await handleCancelAll()));
       return;
     }
 

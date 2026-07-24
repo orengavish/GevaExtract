@@ -894,8 +894,8 @@ function getCc2026Status() {
 // ── API handlers ──────────────────────────────────────────────────────────────
 
 // Minimum tick distance from current market to entry — prevents immediate fills.
-// 4 ticks = 1.0 point for MES/MNQ (tick = 0.25).
-const MIN_ENTRY_TICKS = 4;
+// 8 ticks = 2.0 points for MES/MNQ (tick = 0.25).
+const MIN_ENTRY_TICKS = 8;
 
 async function handleTradesCreate(body) {
   const symbols     = body.symbols     ?? ['MES', 'MNQ'];

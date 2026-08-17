@@ -126,6 +126,27 @@ poll interval, no action needed once gateway comes back up.
 
 ## 4. Incident log
 
+### 2026-08-17 (later same day) — full cross-project health check, all green except the stale-lines bug below
+
+Ran the full §3 health check plus port/process verification across all three sibling
+projects (CC2026, Fetcher2026, GevaExtract) and IB Gateway. Confirmed live:
+
+- IB Gateway: up, 5 established connections on :4002.
+- CC2026 dashboard (:5003) + broker/decider session: both `running`.
+- GevaExtract server (:5005): responding.
+- Fetcher2026 dashboard (:5050) and its separate bars-fetch pipeline (:5004): both up
+  (the bars pipeline's `5s` stage was found stuck idle for ~19 days on a stale scheduler
+  weight and was fixed — see `Fetcher2026\BARS1S_STATUS.md` §0n, not a GevaExtract issue).
+- `GevaAutoTrade` scheduled task: `LastTaskResult=0`, next run on schedule.
+
+**The "Open issue" below (stale `hasLines` check) is still live and unfixed** — confirmed
+via `logs\auto-trade.log`: every scheduled run from 2026-08-15 through 2026-08-16 23:00
+still reports `date=2026-08-13` and `passed=0`, i.e. the auto-trade pipeline has been
+building candidate orders off 4-day-old Geva lines and submitting zero trades for going on
+3 days, silently (task "succeeds" every time — 0 candidates isn't treated as a failure).
+Not fixed here either — same reason as before, it changes live trading-decision logic and
+the proposed fix needs explicit sign-off first.
+
 ### 2026-08-17 — IB Gateway down since ~2026-08-15, root-caused and fixed
 
 **Symptom:** `broker.py` / `decider.py` reported `running`, but had zero established

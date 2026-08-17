@@ -4,19 +4,29 @@ Scrapes Geva's daily ES S/R lines from a private Facebook group, stores them in 
 
 Current version: v11.
 
+Full operations runbook (start/stop/check everything, incident history): [OPERATIONS.md](OPERATIONS.md).
+
 ## Architecture
 
 ```
-extract.js          Playwright scrape → geva.db (posts + lines tables)
-backfill.js         Bulk historical backfill via FB in-group search
-parse-lines.js      Parses raw Hebrew S/R strings into price-level rows
-to-csv.js           Exports geva.db → output/geva_lines.csv
-db.js               sql.js wrapper for geva.db (upsertPost auto-parses lines)
-galao-db.js         Read-only sql.js accessor for CriticalCorallations2026 galao.db
-price-feed.js       Polls Yahoo Finance for MES=F / MNQ=F every 30 s
-trade-builder.js    Builds bracket commands shaped for galao.db commands table
-server.js           HTTP server on :5005 — serves the dashboard
+extract.js               Playwright scrape → geva.db (posts + lines tables)
+backfill.js               Bulk historical backfill via FB in-group search
+parse-lines.js            Parses raw Hebrew S/R strings into price-level rows
+to-csv.js                 Exports geva.db → output/geva_lines.csv
+db.js                     sql.js wrapper for geva.db (upsertPost auto-parses lines)
+galao-db.js               Read-only sql.js accessor for CriticalCorallations2026 galao.db
+price-feed.js             Polls Yahoo Finance for MES=F / MNQ=F every 30 s
+trade-builder.js          Builds bracket commands shaped for galao.db commands table
+server.js                 HTTP server on :5005 — serves the dashboard
+auto-geva-scheduled.ps1   Full auto-trade flow: fetch → build → submit → log. Run by the
+                          GevaAutoTrade scheduled task at 10:00/12:30/15:00 CT daily.
 ```
+
+The full pipeline also depends on two processes **outside this repo** that must be running
+for orders to actually reach IB — see [OPERATIONS.md](OPERATIONS.md) for how to check/start them:
+
+- **IB Gateway** (via IBC, `C:\IBC\StartGateway.bat`) — must be logged in on port 4002 (paper)
+- **CC2026** `trading_dashboard.py` (port 5003) + its `broker.py` / `decider.py` subprocesses
 
 ## DB schema (geva.db)
 
@@ -74,5 +84,14 @@ server.js           HTTP server on :5005 — serves the dashboard
 | `geva.db` | Local SQLite (sql.js binary format) — not committed |
 | `fb-profile/` | Playwright browser profile with saved FB session — not committed |
 | `output/geva_lines.csv` | Latest CSV export — committed |
-| `logs/` | `extract.log`, `backfill.log` — not committed |
+| `logs/` | `extract.log`, `backfill.log`, `auto-trade.log` — not committed |
 | `pending/` | Scratch dir for in-flight trade JSON — not committed |
+
+## Known open issue
+
+`GET /api/today-lines` (server.js) reports `hasLines: true` whenever **any** row exists in
+`geva.db`, regardless of date — it doesn't check that `date` matches today. Since
+`auto-geva-scheduled.ps1` only fetches from Facebook when `hasLines` is false, it will never
+re-fetch once at least one post has ever been saved, and will silently keep trading off
+whatever the most recent stored post is. See [OPERATIONS.md](OPERATIONS.md) for details and
+the proposed fix — not yet applied, pending confirmation since it changes live trading logic.

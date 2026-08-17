@@ -5,6 +5,7 @@ Called by server.js via child_process.spawn. Uses Python's sqlite3 so WAL is han
 Usage:
     python insert-commands.py < commands.json        # insert array of command objects
     python insert-commands.py --state KEY VALUE      # upsert a system_state row
+    python insert-commands.py --cancel               # mark geva_extract PENDING/SUBMITTING/SUBMITTED → CANCELLED
 """
 import argparse
 import json
@@ -64,6 +65,26 @@ def insert_commands(cmds):
         con.close()
 
 
+def cancel_geva(dry_run=False):
+    con = get_con()
+    now = now_utc()
+    try:
+        r = con.execute(
+            "UPDATE commands SET status='CANCELLED', updated_at=? "
+            "WHERE source='geva_extract' AND status IN ('PENDING','SUBMITTING','SUBMITTED')",
+            (now,)
+        )
+        cancelled = r.rowcount
+        con.commit()
+        print(json.dumps({'ok': True, 'cancelled': cancelled}), flush=True)
+    except Exception as e:
+        con.rollback()
+        print(json.dumps({'ok': False, 'error': str(e)}), flush=True)
+        sys.exit(1)
+    finally:
+        con.close()
+
+
 def set_state(key, value):
     con = get_con()
     try:
@@ -86,9 +107,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GevaExtract galao.db write bridge')
     parser.add_argument('--state', nargs=2, metavar=('KEY', 'VALUE'),
                         help='Upsert system_state row')
+    parser.add_argument('--cancel', action='store_true',
+                        help='Mark geva_extract PENDING/SUBMITTING/SUBMITTED → CANCELLED')
     args = parser.parse_args()
 
-    if args.state:
+    if args.cancel:
+        cancel_geva()
+    elif args.state:
         set_state(args.state[0], args.state[1])
     else:
         raw = sys.stdin.read().strip()

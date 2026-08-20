@@ -5,6 +5,9 @@ Scrapes Geva's daily ES S/R lines from a private Facebook group, stores them in 
 Current version: v11.
 
 Full operations runbook (start/stop/check everything, incident history): [OPERATIONS.md](OPERATIONS.md).
+Bootstrapping this repo on a fresh machine: [RESTART_PROJECT.md](RESTART_PROJECT.md).
+This repo's place alongside its sibling algo projects, for a higher-level orchestrating
+session: [ORCHESTRATOR.md](ORCHESTRATOR.md).
 
 ## Architecture
 

@@ -2,6 +2,15 @@
 > Complete briefing for a fresh Claude instance. No prior context needed.
 > Written: 2026-07-21 | Version at time of writing: v11 (server.js) / v9 (git log)
 
+> **Superseded as of 2026-08-18.** The Galgo2027 consolidation this doc was written for
+> never completed (`C:\Projects\side_projects\Galgo2027\` is incomplete/stale — see
+> `CriticalCorallations2026\ORCHESTRATOR.md` §5 for the current status). For a fresh-instance
+> briefing that reflects what's actually running today, use, in order: [CLAUDE.md](CLAUDE.md)
+> (architecture + daily workflow), [OPERATIONS.md](OPERATIONS.md) (start/stop/health-check +
+> incident history), [RESTART_PROJECT.md](RESTART_PROJECT.md) (fresh-machine bootstrap), and
+> [ORCHESTRATOR.md](ORCHESTRATOR.md) (this repo's place alongside its siblings). Kept below
+> for historical reference only.
+
 ---
 
 ## 1. PURPOSE

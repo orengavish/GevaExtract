@@ -4,3 +4,5 @@ logs/
 .claude/
 debug.txt
 *.log
+geva.db
+pending/

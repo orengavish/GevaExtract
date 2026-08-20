@@ -3,6 +3,16 @@
 **Git**: `C:\Projects\GevaExtract` — branch `main` — remote: GitHub (push allowed)
 **Claude permissions**: allow all (no sandbox, no confirm prompts)
 
+> **Superseded as of 2026-08-18.** This was a point-in-time snapshot written before the IB
+> Gateway outage/fix, the auto-trade scheduler, and the stale-lines bug were found. For
+> current architecture and daily operation see [CLAUDE.md](CLAUDE.md); for
+> start/stop/health-check/incident history see [OPERATIONS.md](OPERATIONS.md); for
+> bootstrapping on a fresh machine see [RESTART_PROJECT.md](RESTART_PROJECT.md); for how
+> this repo fits alongside CriticalCorallations2026/Fetcher2026 see
+> [ORCHESTRATOR.md](ORCHESTRATOR.md). Kept for historical reference only — the §12/§13
+> Galgo2027-migration plan below never happened as described (see those docs' own note on
+> `side_projects\Galgo2027` being incomplete/stale).
+
 ---
 
 ## 1. PURPOSE

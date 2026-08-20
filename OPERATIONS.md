@@ -3,7 +3,10 @@
 Full stack runbook: what's supposed to be running, how to check it, how to restart it,
 and a log of incidents. Companion to [CLAUDE.md](CLAUDE.md) (which covers GevaExtract's own
 code); this file covers the whole trading pipeline, including pieces that live outside
-this repo.
+this repo. For bootstrapping this repo on a fresh machine, see
+[RESTART_PROJECT.md](RESTART_PROJECT.md). For this repo's place alongside its sibling algo
+projects (CC2026, Fetcher2026) from a higher-level coordinating session's point of view, see
+[ORCHESTRATOR.md](ORCHESTRATOR.md).
 
 ---
 

@@ -36,9 +36,9 @@ def insert_commands(cmds):
             con.execute(
                 "INSERT INTO commands "
                 "(symbol, line_price, line_type, line_strength, direction, entry_type, "
-                " entry_price, tp_price, sl_price, bracket_size, source, quantity, "
-                " status, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,'geva_extract',1,'PENDING',?,?)",
+                " entry_price, tp_price, sl_price, bracket_size, source, strategy_variant, "
+                " quantity, status, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,'geva_extract',?,1,'PENDING',?,?)",
                 (
                     c['symbol'],
                     c['line_price'],
@@ -50,6 +50,7 @@ def insert_commands(cmds):
                     c['tp_price'],
                     c['sl_price'],
                     c['bracket_size'],    # TP distance in points (for broker replenishment)
+                    c.get('strategy_variant'),  # shared group id for one line's grid fan-out; null if absent
                     now,
                     now,
                 )

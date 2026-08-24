@@ -202,18 +202,26 @@ independent of the Java bug above; use `/INLINE /COLOR` for any future manual/au
 launch). Gateway logged in with no 2FA prompt, `PAPER 4002` window opened, 3 established
 connections on port 4002 confirmed (broker, decider, and one more client).
 
-### Open issue found during this incident — not yet fixed
+### Issue found during this incident — FIXED 2026-08-23
 
-`GET /api/today-lines` in `server.js` (~line 1156) sets `hasLines = lines.length > 0` —
+`GET /api/today-lines` in `server.js` (~line 1156) used to set `hasLines = lines.length > 0` —
 true if *any* row exists in `geva.db`, not specifically for today. `auto-geva-scheduled.ps1`
-only fetches from Facebook when `hasLines` is false, so once at least one post has ever
-been saved, the scheduler never re-fetches. Confirmed live on 2026-08-17: both the 06:00
+only fetched from Facebook when `hasLines` was false, so once at least one post had ever
+been saved, the scheduler never re-fetched. Confirmed live on 2026-08-17: both the 06:00
 daily scrape and a manual `/fetch` trigger still returned Geva's **2026-08-13** post — either
-Geva hasn't posted in 4 days, or the scraper is matching a stale post; unconfirmed, needs
-a human check of the Facebook group. Either way, the scheduler has been building/submitting
+Geva hadn't posted in 4 days, or the scraper was matching a stale post; unconfirmed, needed
+a human check of the Facebook group. Either way, the scheduler had been building/submitting
 trades off 4-day-old S/R levels since 2026-08-15 (0 candidates passed the sanity filter
-each run, so no bad orders went out — but this defeats the purpose of the daily fetch).
+each run, so no bad orders went out — but this defeated the purpose of the daily fetch).
 
-Proposed fix (not applied — changes live trading logic, needs sign-off): treat lines as
-current only when `date` equals today; still allow falling back to the latest stored post
-if a same-day fetch attempt fails, so trading isn't blocked outright when Geva posts late.
+**Fix applied 2026-08-23** (signed off as part of a broader fix-all-known-bugs effort):
+`hasLines` now treats lines as current only when the most-recent row's `date` equals
+today (`server.js:1164`, `lines[0].date === today` — `getAllLines()` is already
+`ORDER BY date DESC` so `lines[0]` is the newest row). `auto-geva-scheduled.ps1` still
+only re-fetches from Facebook when `hasLines` is false, which now correctly means "no
+same-day fetch yet" instead of "never ever fetched." Added the fallback the draft called
+for: if a same-day fetch attempt is *attempted but fails* (network error, scrape failure,
+or a successful fetch that parses no lines), the scheduler falls back to the latest stored
+post (whatever date it is) rather than aborting outright, so trading isn't blocked just
+because today's post hasn't landed yet (`auto-geva-scheduled.ps1`, around the Step 5/6
+fetch block). Self-check: `check_haslines.js`.

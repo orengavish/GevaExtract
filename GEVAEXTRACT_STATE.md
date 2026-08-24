@@ -4,7 +4,9 @@
 **Claude permissions**: allow all (no sandbox, no confirm prompts)
 
 > **Superseded as of 2026-08-18.** This was a point-in-time snapshot written before the IB
-> Gateway outage/fix, the auto-trade scheduler, and the stale-lines bug were found. For
+> Gateway outage/fix, the auto-trade scheduler, and the stale-lines bug were found. The
+> stale-lines bug (2026-08-15 through 2026-08-17 incident, `hasLines` true for any row
+> regardless of date) was fixed 2026-08-23 — see OPERATIONS.md's incident entry. For
 > current architecture and daily operation see [CLAUDE.md](CLAUDE.md); for
 > start/stop/health-check/incident history see [OPERATIONS.md](OPERATIONS.md); for
 > bootstrapping on a fresh machine see [RESTART_PROJECT.md](RESTART_PROJECT.md); for how

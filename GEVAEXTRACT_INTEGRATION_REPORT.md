@@ -485,17 +485,25 @@ cross-repo artifact GevaExtract produces from its trade-building logic:
 | `status` | TEXT | Always inserted as `'PENDING'` | GevaExtract never transitions this — CC2026's `broker.py` owns the state machine from here |
 | `created_at`, `updated_at` | TEXT | ISO8601 UTC | Both set to the same "now" at insert time |
 
-**Not persisted, computed but discarded before insert** (`server.js:1018-1029`'s `clean`
-mapping strips these): `_group_id` (a `randomUUID()` tying one Geva line's MES+SELL/BUY/MNQ
-32-command family together, `trade-builder.js:59`), `_bracket` (the bracket label like
-`b4/16`), `_line_date`. **This means the logical grouping of "these N orders all came from
-the same Geva price level" exists only transiently in server memory and the dashboard UI —
-it is not recoverable from `galao.db` after submission.** Worth fixing in a rebuild if
-per-line grouping/analysis is wanted downstream (see §9).
+**Fixed 2026-08-23**: `trade-builder.js`'s `randomUUID()` group id (`group_id`,
+`trade-builder.js:59`) is now also attached to every command as `strategy_variant`
+(non-underscore-prefixed, so it survives `server.js:1018-1029`'s `clean` allowlist) and
+persisted into `galao.db.commands.strategy_variant` by `insert-commands.py`. **P&L-by-source
+views should group `geva_extract` rows by `strategy_variant`, not raw `source`, to
+distinguish one true Geva signal's 32-command grid fan-out from another.** `source` itself
+is intentionally left as flat `'geva_extract'` for all of them — that's accurate
+attribution, not the bug. Note: `commands.strategy_variant` is a nullable TEXT column added
+to CC2026's schema (`lib/db.py`) by a separate change; if that migration hasn't landed yet,
+the INSERT here will fail until it does.
+
+**Still discarded before insert** (`server.js:1018-1029`'s `clean` mapping strips these,
+unchanged): `_group_id` (the same UUID, kept underscore-prefixed for display-only use —
+`strategy_variant` is now the persisted copy), `_bracket` (the bracket label like `b4/16`),
+`_line_date`.
 
 Per Geva price level: exactly **32 candidate commands** (8 brackets × 2 directions × 2
 symbols, `trade-builder.js:66-67` nested loop over `BRACKETS` and `['BUY','SELL']`, doubled
-for MES+MNQ).
+for MES+MNQ) — all 32 now share one `strategy_variant` value.
 
 ---
 
@@ -531,8 +539,8 @@ Conservative by design — reliable fetching logic defaults to KEEP or WRAP.
 | `clean()` (invisible-Unicode stripper) duplicated between `extract.js:60-75` and inlined inside `backfill.js:61-72`'s `page.evaluate()` closure | Same duplication problem; harder to fix since one copy runs inside a serialized browser-context closure (can't just `require()` a shared module there without Playwright's `addInitScript`/exposed-function machinery). Worth doing, not urgent. |
 | `server.js`'s bare `python` spawn (server.js:862, no fully-qualified interpreter path) | Same footgun documented ecosystem-wide (see `ORCHESTRATOR.md` in this repo) — works today by accident of PATH ordering, not by design. Trivial fix, real fragility. |
 | The raw hand-rolled HTTP router in `server.js` (`if (req.method === ... && url === ...)` chain, server.js:1141-1231) plus the giant inline HTML-string dashboard (`buildHtml()` et al., server.js:171-838) | Not unreliable, just not something a "larger platform" should absorb wholesale — 838 lines of template-literal HTML generation with a documented double-backslash-escaping footgun (see this repo's own `CLAUDE.md` §"Known issues"). If the future platform has its own UI framework, this is the part to actually replace rather than integrate. |
-| `GET /api/today-lines`'s staleness check (server.js:1156-1173, `hasLines = lines.length > 0`) | Known, already-documented bug (see this repo's `OPERATIONS.md` incident log) — doesn't check that the "latest" date is actually today, so the auto-trade scheduler can silently run for days off a stale post. Real logic bug, not an infrastructure judgment call — flagged here again because it directly affects "does the fetch layer actually keep data fresh," which is exactly this report's concern. |
-| `_group_id`/`_bracket` metadata being computed then discarded before `galao.db` insert (§4.5) | Not broken, but a real design gap for any future analysis that wants to know "which orders came from the same Geva line" — currently unrecoverable after submission. |
+| ~~`GET /api/today-lines`'s staleness check (server.js:1156-1173, `hasLines = lines.length > 0`)~~ | **Fixed 2026-08-23** (see `OPERATIONS.md` incident log) — now checks `lines[0].date === today`, with a same-day-fetch-failure fallback added in `auto-geva-scheduled.ps1`. |
+| ~~`_group_id`/`_bracket` metadata being computed then discarded before `galao.db` insert (§4.5)~~ | **Fixed 2026-08-23** — the group id is now also persisted as `commands.strategy_variant` (§4.5). `_bracket`/`_line_date` remain display-only/discarded, unchanged. |
 
 **Explicitly not classified as an "algorithm to evaluate for profitability"**: nothing in
 this repo makes a trading decision beyond "translate a human's manually-drawn price level
@@ -692,8 +700,7 @@ submitOrders(candidates[]) -> {inserted, sanityDropped}
   today is pull-based (a client calls `/fetch` or polls `/api/today-lines`). No event bus, no
   webhook emission exists anywhere in this repo.
 - **Correlation between a submitted order and its originating Geva line, post-submission**
-  (§4.5's discarded `_group_id`) — would need a schema change (either in `galao.db` or a
-  side table) to actually persist, not just an interface wrapper.
+  — **fixed 2026-08-23**, see §4.5: the `_group_id` now persists as `commands.strategy_variant`.
 
 ---
 
@@ -795,12 +802,11 @@ order state beyond a read-only status display. The `commands` table schema itsel
 CriticalCorallations2026, not this repo; treat it as an external contract, not something to
 redesign from GevaExtract's side alone.
 
-Real, currently-open gaps, not fixed here: `GET /api/today-lines` can report stale data as
-"current" (already caused one real multi-day incident); no futures contract-roll handling
-anywhere; per-Geva-line order grouping (`_group_id`) is computed then discarded before DB
-insert, so post-hoc "which orders came from this line" analysis is currently impossible; zero
+Real, currently-open gaps, not fixed here: no futures contract-roll handling anywhere; zero
 auth on any endpoint, including the order-writing one; zero automated tests anywhere in the
-repo.
+repo. Two gaps this report previously listed here — `GET /api/today-lines` reporting stale
+data as "current," and per-Geva-line order grouping (`_group_id`) being discarded before DB
+insert — were fixed 2026-08-23 (see §4.5 and §5's REWORK table, now struck through).
 
 Everything here is single-symbol (`ES` levels → MES/MNQ orders only), single-machine,
 single-user, Windows-path-hardcoded. None of that is a bug given current scope, but none of it

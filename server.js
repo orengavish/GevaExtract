@@ -1026,6 +1026,7 @@ async function handleSubmitCommands(body) {
     tp_price:      c.tp_price,
     sl_price:      c.sl_price,
     bracket_size:  c.bracket_size,
+    strategy_variant: c.strategy_variant ?? null,
   }));
 
   if (!clean.length) {
@@ -1160,8 +1161,10 @@ async function startServer() {
         db.close();
         const date     = lines.length ? lines[0].date : null;
         const today    = new Date().toISOString().slice(0, 10);
-        // "today" is the most recent date in the DB — may be yesterday pre-fetch
-        const hasLines = lines.length > 0;
+        // getAllLines() is ORDER BY date DESC, so lines[0] is the most-recent row.
+        // hasLines is "current" only when that most-recent row is dated today —
+        // a stale row from a prior day must not read as current.
+        const hasLines = lines.length > 0 && lines[0].date === today;
         const count    = date ? lines.filter(l => l.date === date).length : 0;
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ hasLines, date, count, dbToday: today }));

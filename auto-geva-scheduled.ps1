@@ -105,25 +105,40 @@ $linesInfo = HttpGet "$GEVA_URL/api/today-lines"
 $hasLines  = ($null -ne $linesInfo) -and ($linesInfo.hasLines -eq $true)
 Log "Today lines: hasLines=$hasLines count=$($linesInfo.count) date=$($linesInfo.date)"
 
+# Fallback snapshot: /api/today-lines reports the latest stored post's date/count even
+# when it's stale (hasLines=false), so this is available to fall back to if today's
+# fetch attempt fails outright, rather than blocking trading over a late/failed post.
+$staleFallback = $linesInfo
+
 if (-not $hasLines) {
     # Step 6: Fetch from Facebook
-    Log "No lines - fetching from Facebook (timeout 3 min)..."
+    Log "No lines for today - fetching from Facebook (timeout 3 min)..."
     $fetchResult = HttpPost "$GEVA_URL/fetch" $null
     if ($null -eq $fetchResult -or -not $fetchResult.ok) {
         $errMsg = if ($null -ne $fetchResult) { $fetchResult.msg } else { "no response" }
-        Log "FETCH FAILED: $errMsg - no lines available, aborting"
-        Log "===== AUTO GEVA DONE (no lines) ====="
-        exit 0
+        if ($null -ne $staleFallback -and $staleFallback.count -gt 0) {
+            Log "FETCH FAILED: $errMsg - falling back to latest stored post (date=$($staleFallback.date) count=$($staleFallback.count))"
+        } else {
+            Log "FETCH FAILED: $errMsg - no lines available, aborting"
+            Log "===== AUTO GEVA DONE (no lines) ====="
+            exit 0
+        }
+    } else {
+        Log "Fetch succeeded: $($fetchResult.msg)"
+        $linesInfo = HttpGet "$GEVA_URL/api/today-lines"
+        $hasLines  = ($null -ne $linesInfo) -and ($linesInfo.hasLines -eq $true)
+        if (-not $hasLines) {
+            if ($null -ne $staleFallback -and $staleFallback.count -gt 0) {
+                Log "Fetch OK but no lines parsed for today - falling back to latest stored post (date=$($staleFallback.date) count=$($staleFallback.count))"
+            } else {
+                Log "Fetch OK but no lines parsed - not a trading day, aborting"
+                Log "===== AUTO GEVA DONE (no lines) ====="
+                exit 0
+            }
+        } else {
+            Log "Lines after fetch: count=$($linesInfo.count)"
+        }
     }
-    Log "Fetch succeeded: $($fetchResult.msg)"
-    $linesInfo = HttpGet "$GEVA_URL/api/today-lines"
-    $hasLines  = ($null -ne $linesInfo) -and ($linesInfo.hasLines -eq $true)
-    if (-not $hasLines) {
-        Log "Fetch OK but no lines parsed - not a trading day, aborting"
-        Log "===== AUTO GEVA DONE (no lines) ====="
-        exit 0
-    }
-    Log "Lines after fetch: count=$($linesInfo.count)"
 }
 
 # Step 7: Build trades

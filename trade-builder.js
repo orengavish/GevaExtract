@@ -81,6 +81,9 @@ function buildOrdersForLevel({ linePrice, lineType, strength, lineDate, mesPrice
         tp_price:      mesP.tp,
         sl_price:      mesP.sl,
         bracket_size:  rt(bkt.tp * TICK),   // TP distance in points (broker replenishment metadata)
+        // shared across all commands from this one scraped line (both symbols, all brackets/directions) —
+        // lets P&L-by-source views distinguish a 32x grid fan-out from one true signal
+        strategy_variant: group_id,
         // extra context (used for display, not in DB insert)
         _group_id:     group_id,
         _bracket:      bkt.label,
@@ -103,6 +106,7 @@ function buildOrdersForLevel({ linePrice, lineType, strength, lineDate, mesPrice
         tp_price:      mnqP.tp,
         sl_price:      mnqP.sl,
         bracket_size:  rt(mnqTpTicks * TICK),
+        strategy_variant: group_id,
         _group_id:     group_id,
         _bracket:      bkt.label,
         _line_date:    lineDate,

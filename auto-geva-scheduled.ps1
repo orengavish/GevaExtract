@@ -166,7 +166,7 @@ if ($null -eq $buildResult -or -not $buildResult.ok) {
 
 $srcMes = if ($null -ne $buildResult.priceSource) { $buildResult.priceSource.MES } else { "?" }
 $srcMnq = if ($null -ne $buildResult.priceSource) { $buildResult.priceSource.MNQ } else { "?" }
-Log "Build: total=$($buildResult.total) passed=$($buildResult.passed) sanityFiltered=$($buildResult.sanityFiltered) deduped=$($buildResult.deduped) price(MES=$srcMes MNQ=$srcMnq)"
+Log "Build: total=$($buildResult.total) passed=$($buildResult.passed) sanityFiltered=$($buildResult.sanityFiltered) deduped=$($buildResult.deduped) capFiltered=$($buildResult.capFiltered) price(MES=$srcMes MNQ=$srcMnq)"
 
 if ($buildResult.passed -eq 0) {
     Log "No candidates after filter/dedup - nothing to submit this run"
@@ -186,6 +186,7 @@ if ($null -eq $submitResult -or -not $submitResult.ok) {
 }
 
 $dropped = if ($null -ne $submitResult.sanityDropped) { $submitResult.sanityDropped } else { 0 }
-Log "SUBMITTED: inserted=$($submitResult.inserted) secondarySanityDropped=$dropped"
+$capDropped = if ($null -ne $submitResult.capDropped) { $submitResult.capDropped } else { 0 }
+Log "SUBMITTED: inserted=$($submitResult.inserted) secondarySanityDropped=$dropped capDropped=$capDropped"
 Log "===== AUTO GEVA DONE OK ====="
 exit 0

@@ -897,6 +897,28 @@ function getCc2026Status() {
 // 8 ticks = 2.0 points for MES/MNQ (tick = 0.25).
 const MIN_ENTRY_TICKS = 8;
 
+// Max resting (open) orders per (symbol, direction) — IB rejects new orders once a side's
+// open-order count crosses its own limit. 2026-09-01 incident: auto-geva-scheduled.ps1 kept
+// submitting fresh batches (300-450/run) with no count check, hit IB's per-side limit, and the
+// resulting rejection cascade led to a silent 14h PAPER+LIVE disconnect. This caps submission
+// well under that limit instead of relying on IB to reject.
+const MAX_OPEN_PER_SIDE = 15;
+
+async function countOpenPerSide() {
+  const counts = new Map(); // `${symbol}|${direction}` -> count
+  try {
+    const galaoD = await readGalaoDb();
+    if (galaoD) {
+      for (const o of galaoD.getActiveGevaOrders()) {
+        const key = `${o.symbol}|${o.direction}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      galaoD.close();
+    }
+  } catch (_) {}
+  return counts;
+}
+
 async function handleTradesCreate(body) {
   const symbols     = body.symbols     ?? ['MES', 'MNQ'];
   const brackets    = body.brackets    ?? BRACKETS.map(b => b.label);
@@ -954,11 +976,14 @@ async function handleTradesCreate(body) {
     }
   } catch (_) {}
 
+  const openPerSide = await countOpenPerSide();
+
   const priceFor = sym => sym === 'MES' ? prices.MES.price : prices.MNQ.price;
   const minDist  = MIN_ENTRY_TICKS * 0.25;
 
   let sanityFiltered = 0;
   let deduped        = 0;
+  let capFiltered    = 0;
 
   const passed = allCandidates.filter(c => {
     if (!symbols.includes(c.symbol))       return false;
@@ -969,6 +994,11 @@ async function handleTradesCreate(body) {
     // Dedup: skip if an identical active order already exists in galao.db.
     const key = `${c.symbol}|${c.entry_price}|${c.tp_price}|${c.sl_price}|${c.direction}`;
     if (activeKeys.has(key)) { deduped++; return false; }
+    // Cap: don't build more than MAX_OPEN_PER_SIDE resting orders per (symbol, direction).
+    const sideKey = `${c.symbol}|${c.direction}`;
+    const sideCount = openPerSide.get(sideKey) ?? 0;
+    if (sideCount >= MAX_OPEN_PER_SIDE) { capFiltered++; return false; }
+    openPerSide.set(sideKey, sideCount + 1);
     return true;
   });
 
@@ -981,6 +1011,7 @@ async function handleTradesCreate(body) {
     filtered,
     sanityFiltered,
     deduped,
+    capFiltered,
     priceSource: { MES: prices.MES.source ?? 'yahoo', MNQ: prices.MNQ.source ?? 'yahoo' },
   };
 }
@@ -1015,7 +1046,21 @@ async function handleSubmitCommands(body) {
   const sanityDropped = commands.length - safeCommands.length;
 
   // Strip _* client-only metadata fields before inserting
-  const clean = safeCommands.map(c => ({
+  // Backstop cap (belt+suspenders, second copy of the build-time check): if commands were
+  // submitted without going through handleTradesCreate's filter, or time passed between build
+  // and submit, re-count from galao.db right before insert and truncate per (symbol, direction).
+  const openPerSide = await countOpenPerSide();
+  let capDropped = 0;
+  const capped = safeCommands.filter(c => {
+    const sideKey = `${c.symbol}|${c.direction}`;
+    const sideCount = openPerSide.get(sideKey) ?? 0;
+    if (sideCount >= MAX_OPEN_PER_SIDE) { capDropped++; return false; }
+    openPerSide.set(sideKey, sideCount + 1);
+    return true;
+  });
+
+  // Strip _* client-only metadata fields before inserting
+  const clean = capped.map(c => ({
     symbol:        c.symbol,
     line_price:    c.line_price,
     line_type:     c.line_type,
@@ -1030,13 +1075,13 @@ async function handleSubmitCommands(body) {
   }));
 
   if (!clean.length) {
-    return { ok: true, inserted: 0, sanityDropped, msg: 'all candidates dropped by secondary sanity check' };
+    return { ok: true, inserted: 0, sanityDropped, capDropped, msg: 'all candidates dropped by sanity/cap check' };
   }
 
   try {
     const result = await runPython([], clean);
     return result.ok
-      ? { ok: true, inserted: result.inserted, sanityDropped }
+      ? { ok: true, inserted: result.inserted, sanityDropped, capDropped }
       : { ok: false, msg: result.error ?? 'error' };
   } catch (e) {
     return { ok: false, msg: e.message };

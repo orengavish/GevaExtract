@@ -1,13 +1,14 @@
 // Historical backfill — uses Facebook's in-group search to find Geva's daily
 // support/resistance posts and save them all to the DB.
 //
-// Usage: node backfill.js
+// Usage: node backfill.js [--headed] [--since YYYY-MM-DD]
 //
-// Scrolls until FB search is exhausted (NO_NEW_LIMIT consecutive empty scrolls).
-// Date resolution: the Hebrew weekday name Geva writes into the post is the
-// only reliable signal (FB hides timestamp metadata). Posts are encountered
-// newest-first within each weekday, so the Nth occurrence of a weekday maps
-// to N*7 days before the most recent occurrence of that weekday.
+// Date resolution: each post's real publish date is read straight from Facebook's
+// embedded JSON (`story.creation_time`) on the post's own permalink. The old
+// approach — counting weekday occurrences in the search feed and mapping the Nth
+// "יום רביעי" to N*7 days back — was unsound (FB search is not strictly
+// reverse-chronological and every skipped week compounded the drift), and had
+// mis-dated 46 of 50 rows by up to ~6 months. Don't bring it back.
 
 const { chromium } = require('playwright');
 const path = require('path');
@@ -27,8 +28,11 @@ const NO_NEW_LIMIT = 6;
 const WEEKDAY_MAP   = { 'ראשון': 0, 'שני': 1, 'שלישי': 2, 'רביעי': 3, 'חמישי': 4, 'שישי': 5, 'שבת': 6 };
 const WEEKDAY_NAMES = ['יום ראשון', 'יום שני', 'יום שלישי', 'יום רביעי', 'יום חמישי', 'יום שישי', 'יום שבת'];
 
+const HEADED = process.argv.includes('--headed');
+const SINCE  = (() => { const i = process.argv.indexOf('--since'); return i > -1 ? process.argv[i + 1] : null; })();
+
 function toDateStr(d) { return d.toISOString().split('T')[0]; }
-function getHebrewDay(dateStr) { return WEEKDAY_NAMES[new Date(dateStr).getDay()]; }
+function getHebrewDay(dateStr) { return WEEKDAY_NAMES[new Date(dateStr + 'T12:00:00Z').getUTCDay()]; }
 
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`;
@@ -47,13 +51,30 @@ function extractLines(text) {
   return { support, resistance };
 }
 
-function resolveDate(weekdayHebrew, occurrenceIndex, today) {
-  const targetDow = WEEKDAY_MAP[weekdayHebrew];
-  if (targetDow === undefined) return null;
-  const d = new Date(today);
-  while (d.getDay() !== targetDow) d.setDate(d.getDate() - 1);
-  d.setDate(d.getDate() - 7 * occurrenceIndex);
-  return toDateStr(d);
+function weekdayInText(text) {
+  const m = text.match(/יום (ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
+  return m ? WEEKDAY_MAP[m[1]] : null;
+}
+
+// Read a post's real publish date from Facebook's embedded JSON on its permalink.
+async function realDateFor(page, url) {
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(3000);
+  const html = await page.content();
+
+  let ts = null;
+  const story = html.match(/"story":\{"creation_time":(\d{10})/);
+  if (story) {
+    ts = +story[1];
+  } else {
+    const all = [...html.matchAll(/"creat(?:ion|ed)_time":(\d{10})/g)].map(m => +m[1]);
+    if (all.length) {
+      const freq = {};
+      for (const v of all) freq[v] = (freq[v] || 0) + 1;
+      ts = +Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0];
+    }
+  }
+  return ts ? new Date(ts * 1000) : null;
 }
 
 async function scanMatches(page) {
@@ -77,27 +98,30 @@ async function scanMatches(page) {
       if (raw.length > maxLen) continue;
       const c = clean(raw);
       if (!c.includes(sa)) continue;
-      const bodyMatch = c.match(/בוקר טוב[\s\S]+?בלבד\./);
-      if (!bodyMatch) continue;
+      const idx = c.lastIndexOf('בוקר טוב');
+      if (idx < 0) continue;
+      const body = c.slice(idx, idx + maxLen).trim();
+      if (!body.includes('קווי התנגדות')) continue;
 
       let postUrl = null;
       for (const pat of [
         'a[href*="/groups/"][href*="/posts/"]',
         'a[href*="facebook.com"][href*="fbid="]',
         'a[href*="facebook.com"][href*="/permalink/"]',
+        'a[href*="/photo/"]',
       ]) {
         const a = post.querySelector(pat);
         if (a) { postUrl = a.href; break; }
       }
 
-      out.push({ fullText: bodyMatch[0].trim(), postUrl });
+      out.push({ fullText: body, postUrl });
     }
     return out;
   }, [SEARCH_TERM, POST_SEL, MAX_TEXT_LEN]);
 }
 
 async function main() {
-  log('=== Backfill started — scrolling until FB search exhausted ===');
+  log(`=== Backfill started (real-date mode)${SINCE ? ` — since ${SINCE}` : ''} ===`);
 
   if (!fs.existsSync(PROFILE_DIR)) {
     log('ERROR: No saved Facebook session. Run "node save-auth.js" first.');
@@ -107,7 +131,7 @@ async function main() {
   const db = await openDb();
 
   const browser = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
+    headless: !HEADED,
     args: ['--start-maximized'],
     viewport: null,
   });
@@ -158,46 +182,42 @@ async function main() {
 
     log(`Total unique candidate posts: ${collected.length}`);
 
-    // Resolve dates: count occurrences per weekday in encounter order (newest first).
-    const today = new Date();
-    const occurrenceCount = {};
-    const resolved = [];
+    let saved = 0, skipExisting = 0, skipNoUrl = 0, skipWeekday = 0, skipNoDate = 0, skipSince = 0;
     for (const m of collected) {
-      const dayMatch = m.fullText.match(/יום (ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
-      if (!dayMatch) { log('  Skipping — no weekday name in post.'); continue; }
-      const wd = dayMatch[1];
-      const occIdx = occurrenceCount[wd] ?? 0;
-      occurrenceCount[wd] = occIdx + 1;
-      const date = resolveDate(wd, occIdx, today);
-      if (date) resolved.push({ date, ...m });
-    }
+      if (!m.postUrl) { skipNoUrl++; log('  skip — no permalink for a candidate post'); continue; }
 
-    resolved.sort((a, b) => (a.date < b.date ? 1 : -1));
+      const d = await realDateFor(page, m.postUrl).catch(() => null);
+      if (!d) { skipNoDate++; log(`  skip — no FB timestamp: ${m.postUrl}`); continue; }
+      const date = toDateStr(d);
 
-    let savedCount = 0, skippedCount = 0;
-    for (const r of resolved) {
-      if (db.postExists(r.date)) {
-        log(`  Already in DB: ${r.date} — skipping`);
-        skippedCount++;
+      const wdText = weekdayInText(m.fullText);
+      if (wdText !== null && wdText !== d.getUTCDay()) {
+        skipWeekday++;
+        log(`  skip — weekday mismatch: FB date ${date} (${WEEKDAY_NAMES[d.getUTCDay()]}) vs text "${WEEKDAY_NAMES[wdText]}" — ${m.postUrl}`);
         continue;
       }
-      const { support, resistance } = extractLines(r.fullText);
+
+      if (SINCE && date < SINCE) { skipSince++; continue; }
+      if (db.postExists(date)) { skipExisting++; log(`  already in DB: ${date}`); continue; }
+
+      const { support, resistance } = extractLines(m.fullText);
       db.upsertPost({
-        date:       r.date,
-        day:        getHebrewDay(r.date),
+        date,
+        day:        getHebrewDay(date),
         support,
         resistance,
-        fullText:   r.fullText,
-        postUrl:    r.postUrl,
+        fullText:   m.fullText,
+        postUrl:    m.postUrl,
         capturedAt: new Date().toISOString(),
         source:     'backfill',
       });
-      log(`  Saved: ${r.date}`);
-      savedCount++;
+      log(`  saved: ${date}`);
+      saved++;
     }
 
     db.save();
-    log(`=== Backfill complete: ${savedCount} saved, ${skippedCount} already in DB ===`);
+    log(`=== Backfill complete: ${saved} saved | ${skipExisting} already in DB | ` +
+        `${skipSince} before --since | ${skipWeekday} weekday-mismatch | ${skipNoUrl} no-url | ${skipNoDate} no-date ===`);
 
   } finally {
     db.close();

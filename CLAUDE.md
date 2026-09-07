@@ -13,7 +13,11 @@ session: [ORCHESTRATOR.md](ORCHESTRATOR.md).
 
 ```
 extract.js               Playwright scrape → geva.db (posts + lines tables)
-backfill.js               Bulk historical backfill via FB in-group search
+backfill.js               Bulk historical backfill. Default = FB in-group search (real-date
+                          mode). --profile = Geva's group post history; --allfeed = the plain
+                          group feed + ?sorting_setting=CHRONOLOGICAL; --query overrides the
+                          search string. All FB scraping surfaces cap ~40-75 posts and don't
+                          reach past ~2026-06; deep history came in via manual relay instead.
 parse-lines.js            Parses raw Hebrew S/R strings into price-level rows
 to-csv.js                 Exports geva.db → output/geva_lines.csv
 db.js                     sql.js wrapper for geva.db (upsertPost auto-parses lines)
@@ -37,7 +41,22 @@ for orders to actually reach IB — see [OPERATIONS.md](OPERATIONS.md) for how t
 `date` (PK), `day`, `support`, `resistance`, `full_text`, `post_url`, `captured_at`, `source`
 
 **lines** — parsed price levels (auto-populated by `upsertPost`)  
-`sym`, `date`, `line_type` (sup/res), `price`, `strength` (!/?/other/empty)
+`sym`, `date`, `line_type` (sup/res), `price`, `strength` (`!`/`?`/empty — `parse-lines.js`
+reduces compound markers like `*?!` by precedence, so `other` no longer occurs)
+
+`source` values: `daily` (extract.js), `backfill` (backfill.js), `manual` (hand-relayed from
+FB by a human, parsed + inserted directly). As of 2026-09 the dataset spans **2022-04-11 →
+2026-09-03, ~157 posts** — the pre-2026-06 history is almost entirely `manual`, because every
+automated FB surface caps out around ~2026-06. 46 mis-dated `backfill` rows were corrected
+against Facebook's `story.creation_time` in 2026-09 (weekday-name matching alone can't catch
+a real post filed under the wrong week).
+
+## Downstream: CriticalExtraction
+
+`C:\Projects\CriticalExtraction` reads `geva.db` (read-only, frozen snapshot) as ground truth
+and tries to reproduce Geva's lines from market data. Finding (2026-09): ~55% of his daily
+lines are carried forward verbatim from the prior day's post; market-geometry formulas
+explain <25%. A persistence model there reproduces ~58% within 2 pt vs ~8% from scratch.
 
 ## Daily workflow
 

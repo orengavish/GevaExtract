@@ -1,6 +1,14 @@
 # auto-geva-scheduled.ps1
-# Runs at 18:00 / 20:30 / 23:00 IL = 10:00 / 12:30 / 15:00 CT
-# Steps: ensure services up -> session running -> replenish -> check/fetch lines -> build -> submit -> log
+# Runs at 16:25 / 20:30 / 23:00 IL = 08:25 / 12:30 / 15:00 CT
+# 2026-09-10: first run moved 18:00 -> 16:25 IL so the FB fetch lands before the 16:30 IL
+# market open, not ~18:30 after execution delay (too late for same-day lines).
+# 2026-09-10: steps 7-8 (build+submit via GevaExtract's own /api/trades/create and
+# /api/submit-commands) replaced with a call to CC2026's own /api/geva/import-manual-lines --
+# GevaExtract's execution pipeline is blocked (2026-09-09 incident, broker.py Gate 0 cancels
+# anything source='geva_extract' anyway, so those two calls were pure waste). This only reads
+# geva.db (already fetched above) and inserts into CC2026's own critical_lines as
+# source='geva_manual' + a matched control, which decider.py's existing pipeline then trades.
+# Steps: ensure services up -> session running -> replenish -> check/fetch lines -> import into CC2026 -> log
 
 $GEVA_URL = "http://localhost:5005"
 $CC_URL   = "http://localhost:5003"
@@ -141,52 +149,24 @@ if (-not $hasLines) {
     }
 }
 
-# Step 7: Build trades
-$allBrackets = @('b4','b8','b16','b32','b4/16','b16/4','b8/32','b32/8')
-$buildBody = [PSCustomObject]@{
-    symbols     = @('MES','MNQ')
-    brackets    = $allBrackets
-    minStrength = 1
-}
-Log "Building trades..."
-$buildResult = HttpPost "$GEVA_URL/api/trades/create" $buildBody
+# Step 7: Import today's real Geva lines into CC2026 (source='geva_manual' + a matched
+# control) -- CC2026's own decider.py trades them from there via its normal pipeline.
+# GevaExtract's own /api/trades/create + /api/submit-commands are deliberately NOT called
+# here anymore -- that pipeline is blocked at broker.py Gate 0 (2026-09-09), so calling it
+# only ever produced churn that got cancelled.
+Log "Importing today's Geva lines into CC2026..."
+$importResult = HttpPost "$CC_URL/api/geva/import-manual-lines" $null
 
-if ($null -eq $buildResult -or -not $buildResult.ok) {
-    $errMsg = if ($null -ne $buildResult) { $buildResult.msg } else { "no response" }
-    Log "Build attempt 1 failed ($errMsg) - retrying in 38s"
-    Start-Sleep -Seconds 38
-    $buildResult = HttpPost "$GEVA_URL/api/trades/create" $buildBody
-}
-
-if ($null -eq $buildResult -or -not $buildResult.ok) {
-    $errMsg = if ($null -ne $buildResult) { $buildResult.msg } else { "no response" }
-    Log "BUILD FAILED: $errMsg - aborting"
+if ($null -eq $importResult -or -not $importResult.ok) {
+    $errMsg = if ($null -ne $importResult) { $importResult.error } else { "no response" }
+    Log "IMPORT FAILED: $errMsg"
     exit 1
 }
 
-$srcMes = if ($null -ne $buildResult.priceSource) { $buildResult.priceSource.MES } else { "?" }
-$srcMnq = if ($null -ne $buildResult.priceSource) { $buildResult.priceSource.MNQ } else { "?" }
-Log "Build: total=$($buildResult.total) passed=$($buildResult.passed) sanityFiltered=$($buildResult.sanityFiltered) deduped=$($buildResult.deduped) capFiltered=$($buildResult.capFiltered) price(MES=$srcMes MNQ=$srcMnq)"
-
-if ($buildResult.passed -eq 0) {
-    Log "No candidates after filter/dedup - nothing to submit this run"
-    Log "===== AUTO GEVA DONE (0 candidates) ====="
-    exit 0
+if ($importResult.skipped_reason) {
+    Log "Import skipped: $($importResult.skipped_reason)"
+} else {
+    Log "Imported: real=$($importResult.real_inserted) control=$($importResult.control_inserted) restarted_decider=$($importResult.restarted_decider)"
 }
-
-# Step 8: Submit
-Log "Submitting $($buildResult.passed) orders..."
-$submitBody   = [PSCustomObject]@{ commands = $buildResult.candidates }
-$submitResult = HttpPost "$GEVA_URL/api/submit-commands" $submitBody
-
-if ($null -eq $submitResult -or -not $submitResult.ok) {
-    $errMsg = if ($null -ne $submitResult) { $submitResult.msg } else { "no response" }
-    Log "SUBMIT FAILED: $errMsg"
-    exit 1
-}
-
-$dropped = if ($null -ne $submitResult.sanityDropped) { $submitResult.sanityDropped } else { 0 }
-$capDropped = if ($null -ne $submitResult.capDropped) { $submitResult.capDropped } else { 0 }
-Log "SUBMITTED: inserted=$($submitResult.inserted) secondarySanityDropped=$dropped capDropped=$capDropped"
 Log "===== AUTO GEVA DONE OK ====="
 exit 0
